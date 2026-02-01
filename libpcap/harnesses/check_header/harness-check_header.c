@@ -9,7 +9,62 @@
 #define MAX_INPUT_SIZE   (128 * 1024)
 #define MAX_ITERATIONS   1000
 
-int main(void) {
+/* =========================
+ * Valid aggressive callback
+ * ========================= */
+static void fuzz_cb(u_char *user,
+                    const struct pcap_pkthdr *h,
+                    const u_char *bytes)
+{
+    (void)user;
+
+    /* Force header field reads */
+    volatile uint32_t cap = h->caplen;
+    volatile uint32_t len = h->len;
+    (void)cap;
+    (void)len;
+
+    /* Touch payload edges */
+    if (bytes && h->caplen) {
+        ((volatile uint8_t *)bytes)[0];
+        ((volatile uint8_t *)bytes)[h->caplen - 1];
+    }
+}
+
+/* =========================
+ * Drain strategies
+ * ========================= */
+static void drain_next_ex(pcap_t *p, int limit)
+{
+    struct pcap_pkthdr *hdr;
+    const u_char *pkt;
+    int rc;
+
+    while (limit-- > 0 && (rc = pcap_next_ex(p, &hdr, &pkt)) >= 0) {
+        if (rc == 1 && pkt && hdr->caplen) {
+            ((volatile uint8_t *)pkt)[hdr->caplen - 1];
+        }
+    }
+
+    /* EOF / error read (legal) */
+    pcap_next_ex(p, &hdr, &pkt);
+}
+
+static void drain_dispatch(pcap_t *p, int cnt)
+{
+    pcap_dispatch(p, cnt, fuzz_cb, NULL);
+}
+
+static void drain_loop(pcap_t *p, int cnt)
+{
+    pcap_loop(p, cnt, fuzz_cb, NULL);
+}
+
+/* =========================
+ * Main
+ * ========================= */
+int main(void)
+{
     static uint8_t buf[MAX_INPUT_SIZE];
 
 #ifdef __AFL_HAVE_MANUAL_CONTROL
@@ -19,60 +74,68 @@ int main(void) {
     while (__AFL_LOOP(MAX_ITERATIONS)) {
 
         ssize_t len = read(STDIN_FILENO, buf, sizeof(buf));
-        if (len < 16)
+        if (len <= 0)
             continue;
 
         char errbuf[PCAP_ERRBUF_SIZE];
         memset(errbuf, 0, sizeof(errbuf));
 
-        /* ---- In-memory file, no I/O ---- */
-        FILE *fp = fmemopen(buf, len, "rb");
-        if (!fp)
-            continue;
+        /* Multiple reopen cycles from same buffer */
+        for (int round = 0; round < 2; round++) {
 
-        /* ---- Open capture (pcap OR pcapng) ---- */
-        pcap_t *p = pcap_fopen_offline(fp, errbuf);
-        if (!p) {
-            /* libpcap did NOT take ownership */
-            fclose(fp);
-            continue;
-        }
+            FILE *fp = fmemopen(buf, len, "rb");
+            if (!fp)
+                break;
 
-        /* ---- Aggressive but legal snaplen churn ---- */
-        int snaplen = 16 + (buf[0] << 8);
-        if (snaplen < 16) snaplen = 16;
-        if (snaplen > 65535) snaplen = 65535;
-        pcap_set_snaplen(p, snaplen);
-
-        /* ---- Drain packets fully ---- */
-        struct pcap_pkthdr *hdr;
-        const u_char *pkt;
-        int rc;
-
-        while ((rc = pcap_next_ex(p, &hdr, &pkt)) == 1) {
-
-            /* Touch header fields to force reads */
-            volatile uint32_t caplen = hdr->caplen;
-            volatile uint32_t plen   = hdr->len;
-            (void)caplen;
-            (void)plen;
-
-            /* Optional snaplen mutation mid-stream (allowed) */
-            if (buf[1] & 0x01) {
-                int new_snap = 32 + ((buf[2] << 4) & 0x3fff);
-                if (new_snap > 65535) new_snap = 65535;
-                pcap_set_snaplen(p, new_snap);
+            pcap_t *p = pcap_fopen_offline(fp, errbuf);
+            if (!p) {
+                fclose(fp);
+                break;
             }
-        }
 
-        /* ---- Error path coverage ---- */
-        if (rc == -1) {
-            (void)pcap_geterr(p);
-        }
+            /* Aggressive but legal snaplen changes */
+            int snaplen = (buf[round] << 8) | buf[(round + 1) % len];
+            pcap_set_snaplen(p, snaplen);
 
-        /* ---- Clean shutdown ---- */
-        /* pcap_close() WILL fclose(fp) internally */
-        pcap_close(p);
+            /* API mixing based on input */
+            switch (buf[round] & 7) {
+            case 0:
+                drain_next_ex(p, 8);
+                break;
+            case 1:
+                drain_dispatch(p, 4);
+                drain_next_ex(p, 4);
+                break;
+            case 2:
+                drain_loop(p, 4);
+                break;
+            case 3:
+                drain_next_ex(p, 2);
+                drain_dispatch(p, 2);
+                drain_loop(p, 2);
+                break;
+            case 4:
+                drain_dispatch(p, 8);
+                break;
+            case 5:
+                drain_loop(p, 1);
+                drain_next_ex(p, 8);
+                break;
+            default:
+                drain_next_ex(p, 1);
+                drain_dispatch(p, 1);
+                break;
+            }
+
+            /* Error path probing */
+            const char *e = pcap_geterr(p);
+            if (e && e[0]) {
+                volatile char c = e[0];
+                (void)c;
+            }
+
+            pcap_close(p);
+        }
     }
 
     return 0;
