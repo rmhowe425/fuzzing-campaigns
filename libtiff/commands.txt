@@ -1,0 +1,32 @@
+export AFL_USE_ASAN=1
+export AFL_USE_UBSAN=1
+export AFL_SKIP_CPUFREQ=1
+export AFL_DISABLE_TRIM=1
+export AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1
+export UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=0:symbolize=0
+export ASAN_OPTIONS=abort_on_error=1:detect_leaks=0:allocator_may_return_null=1:symbolize=0:handle_segv=0:handle_sigbus=0:handle_abort=0:fast_unwind_on_malloc=0
+export AFL_CUSTOM_MUTATOR_LIBRARY=mutators/tiff_read_directory.so
+
+taskset -c 0 afl-fuzz -i seeds -o out -M master -p explore -x dictionaries/tiff_read_dictionary.dict -- ./harnesses/tiff_read_directory
+taskset -c 1 afl-fuzz -i seeds -o out -S secondary1 -p explore -x dictionaries/tiff_read_dictionary.dict -- ./harnesses/tiff_read_directory
+taskset -c 2 afl-fuzz -i seeds -o out -S secondary2 -p explore -x dictionaries/tiff_read_dictionary.dict -- ./harnesses/tiff_read_directory
+taskset -c 3 afl-fuzz -i seeds -o out -S secondary3 -p explore -x dictionaries/tiff_read_dictionary.dict -- ./harnesses/tiff_read_directory
+taskset -c 4 afl-fuzz -i seeds -o out -S secondary4 -p explore -x dictionaries/tiff_read_dictionary.dict -- ./harnesses/tiff_read_directory
+taskset -c 5 afl-fuzz -i seeds -o out -S secondary5 -p explore -x dictionaries/tiff_read_dictionary.dict -- ./harnesses/tiff_read_directory
+taskset -c 6 afl-fuzz -i seeds -o out -S secondary6 -p fast -x dictionaries/tiff_read_dictionary.dict -- ./harnesses/tiff_read_directory
+taskset -c 7 afl-fuzz -i seeds -o out -S secondary7 -p fast -x dictionaries/tiff_read_dictionary.dict -- ./harnesses/tiff_read_directory
+taskset -c 8 afl-fuzz -i seeds -o out -S secondary8 -p explore -x dictionaries/tiff_read_dictionary.dict -- ./harnesses/tiff_read_directory
+taskset -c 9 afl-fuzz -i seeds -o out -S secondary9 -p explore -x dictionaries/tiff_read_dictionary.dict -- ./harnesses/tiff_read_directory
+
+======================================================================================================================================================================================
+taskset -c 0 afl-fuzz -i - -o out -M master -x dictionaries/tiff_read_dictionary.dict -- ../../tiff-4.7.1-asan/tools/tiffcp @@ /dev/null
+taskset -c 1 afl-fuzz -i seeds -o out -S secondary1 -p explore -x dictionaries/tiff_read_dictionary.dict -- ../../tiff-4.7.1-asan/tools/tiffcp -c lzw @@ /dev/null
+taskset -c 2 afl-fuzz -i seeds -o out -S secondary2 -p explore -x dictionaries/tiff_read_dictionary.dict -- ../../tiff-4.7.1-asan/tools/tiffcp -c zip @@ /dev/null
+taskset -c 3 afl-fuzz -i seeds -o out -S secondary3 -p explore -x dictionaries/tiff_read_dictionary.dict -- ../../tiff-4.7.1-asan/tools/tiffcp -c jpeg @@ /dev/null
+taskset -c 4 afl-fuzz -i seeds -o out -S secondary4 -p explore -x dictionaries/tiff_read_dictionary.dict -- ../../tiff-4.7.1-asan/tools/tiffcp -c lzw -p separate @@ /dev/null
+taskset -c 5 afl-fuzz -i seeds -o out -S secondary5 -p explore -x dictionaries/tiff_read_dictionary.dict -- ../../tiff-4.7.1-asan/tools/tiffcp -c zip -t @@ /dev/null
+taskset -c 6 afl-fuzz -i seeds -o out -S secondary6 -p fast -x dictionaries/tiff_read_dictionary.dict -- ../../tiff-4.7.1-asan/tools/tiffcp -c lzw -r 1 @@ /dev/null
+taskset -c 7 afl-fuzz -i seeds -o out -S secondary7 -p fast -x dictionaries/tiff_read_dictionary.dict -- ../../tiff-4.7.1-asan/tools/tiffcp -c zip -p contig @@ /dev/null
+taskset -c 8 afl-fuzz -i seeds -o out -S secondary8 -p explore -x dictionaries/tiff_read_dictionary.dict -- ../../tiff-4.7.1-asan/tools/tiffcp -c lzw -p separate -t @@ /dev/null
+taskset -c 9 afl-fuzz -i seeds -o out -S secondary9 -p explore -x dictionaries/tiff_read_dictionary.dict -- ../../tiff-4.7.1-asan/tools/tiffcp -c zip -p separate -r 1 -t @@ /dev/null
+afl-fuzz -i seeds -o out -S cmplog -c ../../tiff-4.7.1-cmplog/tools/tiffcp -m none -- ../../tiff-4.7.1-asan/tools/tiffcp @@ /dev/null
