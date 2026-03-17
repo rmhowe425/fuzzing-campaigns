@@ -13,31 +13,18 @@
 static unsigned char *mut_buf = NULL;
 static size_t mut_buf_size = 0;
 
-/* ---------------- PNG Minimal Structures ---------------- */
+/* ================= Minimal PNG ================= */
 
-// PNG header + IHDR (1x1 RGB)
-static const unsigned char MINIMAL_IHDR[] = {
+static const unsigned char MINIMAL_PNG[] = {
   0x89,'P','N','G',0x0D,0x0A,0x1A,0x0A,
-  0x00,0x00,0x00,0x0D,
-  'I','H','D','R',
-  0x00,0x00,0x00,0x01,
-  0x00,0x00,0x00,0x01,
+  0x00,0x00,0x00,0x0D,'I','H','D','R',
+  0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x01,
   0x08,0x02,0x00,0x00,0x00,
-  0x90,0x77,0x53,0xDE
-};
-
-// minimal IDAT (compressed empty block)
-static const unsigned char MINIMAL_IDAT[] = {
-  0x00,0x00,0x00,0x08,
-  'I','D','A','T',
+  0x90,0x77,0x53,0xDE,
+  0x00,0x00,0x00,0x08,'I','D','A','T',
   0x78,0x9c,0x63,0x00,0x00,0x00,0x02,0x00,
-  0x01,0x05,0x5c,0x0b,0x02
-};
-
-// IEND
-static const unsigned char MINIMAL_IEND[] = {
-  0x00,0x00,0x00,0x00,
-  'I','E','N','D',
+  0x01,0x05,0x5c,0x0b,0x02,
+  0x00,0x00,0x00,0x00,'I','E','N','D',
   0xAE,0x42,0x60,0x82
 };
 
@@ -48,7 +35,7 @@ typedef struct {
   uint32_t crc;
 } png_chunk_t;
 
-/* ---------------- Utility ---------------- */
+/* ================= Utilities ================= */
 
 static uint32_t read_be32(const unsigned char *p) {
   return ((uint32_t)p[0] << 24) |
@@ -76,7 +63,7 @@ static uint32_t compute_crc(const char *type,
   return crc;
 }
 
-/* ---------------- PNG Parser ---------------- */
+/* ================= Parser ================= */
 
 static int parse_png_chunks(const unsigned char *buf,
                             size_t size,
@@ -104,6 +91,7 @@ static int parse_png_chunks(const unsigned char *buf,
 
     chunks[count].length=len;
 
+    chunks[count].data = NULL;
     if (len) {
       chunks[count].data = malloc(len);
       if (!chunks[count].data) break;
@@ -123,21 +111,50 @@ static int parse_png_chunks(const unsigned char *buf,
 }
 
 static void free_chunks(png_chunk_t *chunks,int count) {
-
   if (!chunks) return;
-
   for (int i=0;i<count;i++)
     free(chunks[i].data);
-
   free(chunks);
 }
 
-/* ---------------- Mutation Engine ---------------- */
+/* ================= Mutation Helpers ================= */
+
+static void mutate_bytes(unsigned char *data, size_t len) {
+  if (!data || !len) return;
+
+  size_t n = (rand() % 32) + 1;
+
+  for (size_t i=0;i<n;i++) {
+    size_t pos = rand() % len;
+    data[pos] ^= (1 << (rand()%8));
+  }
+}
+
+/* ================= Core Mutator ================= */
 
 static size_t png_mutate(unsigned char *data,
                          size_t size,
                          unsigned char *out,
                          size_t max_size) {
+
+  /* -------- Chaos mode (CRITICAL) -------- */
+  if (rand() % 5 == 0) {
+    size_t n = size < max_size ? size : max_size;
+    memcpy(out, data, n);
+
+    for (size_t i=0;i<n;i++)
+      if (rand()%3==0)
+        out[i] ^= rand();
+
+    return n;
+  }
+
+  /* -------- AFL bypass mode -------- */
+  if (rand() % 5 == 0) {
+    size_t n = size < max_size ? size : max_size;
+    memcpy(out, data, n);
+    return n;
+  }
 
   png_chunk_t *chunks=NULL;
   int chunk_count=0;
@@ -146,72 +163,107 @@ static size_t png_mutate(unsigned char *data,
 
   size_t pos=0;
 
-  /* always emit valid header */
-  size_t hdr = sizeof(MINIMAL_IHDR);
+  /* sometimes start from scratch */
+  if (!parsed || rand()%4==0) {
+    size_t n = sizeof(MINIMAL_PNG);
+    if (n > max_size) n = max_size;
+    memcpy(out, MINIMAL_PNG, n);
+    pos = n;
+  } else {
+    memcpy(out, "\x89PNG\r\n\x1a\n", 8);
+    pos = 8;
+  }
 
-  if (hdr > max_size) hdr = max_size;
+  if (parsed && chunk_count > 1 && rand()%3==0) {
+    int a = rand()%chunk_count;
+    int b = rand()%chunk_count;
+    png_chunk_t tmp = chunks[a];
+    chunks[a] = chunks[b];
+    chunks[b] = tmp;
+  }
 
-  memcpy(out,MINIMAL_IHDR,hdr);
-  pos = hdr;
+  for (int i=0;i<chunk_count;i++) {
 
-  int saw_idat=0;
+    png_chunk_t *c = &chunks[i];
 
-  if (parsed) {
+    if (rand()%5==0) continue; /* drop chunk */
 
-    for (int i=0;i<chunk_count;i++) {
+    uint32_t len = c->length;
 
-      png_chunk_t *c = &chunks[i];
+    if (len > MAX_SAFE_CHUNK)
+      len = MAX_SAFE_CHUNK;
 
-      if (!c->data || !c->length) continue;
+    if (pos + 12 + len > max_size)
+      break;
 
-      uint32_t len=c->length;
+    unsigned char *tmp = NULL;
 
-      if (len>MAX_SAFE_CHUNK) len=MAX_SAFE_CHUNK;
-
-      if (pos + 12 + len > max_size) break;
-
-      unsigned char *tmp = malloc(len);
+    if (len) {
+      tmp = malloc(len);
       if (!tmp) break;
+      memcpy(tmp, c->data, len);
+    }
 
-      memcpy(tmp,c->data,len);
+    /* mutate IHDR heavily */
+    if (!strcmp(c->type,"IHDR") && len >= 13) {
 
-      /* mutate IDAT or ancillary chunks */
-      if (!strcmp(c->type,"IDAT") || (c->type[0]&0x20)) {
+      write_be32(tmp, rand()%20000);
+      write_be32(tmp+4, rand()%20000);
 
-        uint32_t mutate_len = len>4096 ? 4096 : len;
+      tmp[8]  = (rand()%5==0) ? (rand()%256) : (1 << (rand()%4));
+      tmp[9]  = rand()%7;
+      tmp[10] = rand()%2;
+      tmp[11] = rand()%2;
+      tmp[12] = rand()%2;
+    }
 
-        for (uint32_t j=0;j<mutate_len;j++)
-          if (rand()%2)
-            tmp[j] ^= 1 << (rand()%8);
+    /* mutate IDAT and others */
+    if (!strcmp(c->type,"IDAT") || (c->type[0]&0x20)) {
 
+      mutate_bytes(tmp, len);
+
+      /* zlib corruption */
+      if (len > 2 && rand()%3==0) {
+        tmp[0] = 0x78;
+        tmp[1] = (rand()%2) ? 0x9c : 0xda;
       }
+    }
 
-      if (!strcmp(c->type,"IDAT"))
-        saw_idat=1;
+    /* random duplication */
+    int repeat = (rand()%10==0) ? 2 : 1;
 
-      uint32_t crc = compute_crc(c->type,tmp,len);
+    for (int r=0;r<repeat;r++) {
 
       write_be32(out+pos,len);
       memcpy(out+pos+4,c->type,4);
-      memcpy(out+pos+8,tmp,len);
+
+      if (len)
+        memcpy(out+pos+8,tmp,len);
+
+      uint32_t crc;
+
+      if (rand()%2)
+        crc = compute_crc(c->type,tmp,len);
+      else
+        crc = rand(); /* corrupt CRC */
+
       write_be32(out+pos+8+len,crc);
 
       pos += 12 + len;
 
-      free(tmp);
+      if (pos >= max_size) break;
     }
+
+    free(tmp);
+
+    if (pos >= max_size) break;
   }
 
-  /* ensure IDAT exists */
-  if (!saw_idat && pos + sizeof(MINIMAL_IDAT) < max_size) {
-    memcpy(out+pos,MINIMAL_IDAT,sizeof(MINIMAL_IDAT));
-    pos += sizeof(MINIMAL_IDAT);
-  }
-
-  /* always append IEND */
-  if (pos + sizeof(MINIMAL_IEND) < max_size) {
-    memcpy(out+pos,MINIMAL_IEND,sizeof(MINIMAL_IEND));
-    pos += sizeof(MINIMAL_IEND);
+  /* optional IEND */
+  if (rand()%2 && pos + 12 <= max_size) {
+    memcpy(out+pos,"\x00\x00\x00\x00IEND",8);
+    write_be32(out+pos+8, rand()); /* maybe corrupt */
+    pos += 12;
   }
 
   if (parsed)
@@ -225,7 +277,7 @@ static size_t png_mutate(unsigned char *data,
   return pos;
 }
 
-/* ---------------- AFL++ Hooks ---------------- */
+/* ================= AFL Hooks ================= */
 
 unsigned int afl_custom_init(void **data, unsigned int seed) {
 
@@ -240,13 +292,9 @@ unsigned int afl_custom_init(void **data, unsigned int seed) {
 }
 
 void afl_custom_deinit(void *data) {
-
   (void)data;
-
   free(mut_buf);
 }
-
-/* required AFL++ fuzz hook */
 
 size_t afl_custom_fuzz(
   void *data,
