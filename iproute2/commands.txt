@@ -1,0 +1,10 @@
+Compile Harness
+--------------
+afl-clang-fast -O1 -g -fno-omit-frame-pointer \
+  -I../iproute2/include \
+  -I../iproute2/lib \
+  harness.c \
+  ../iproute2/lib/libnetlink.a \
+  ../iproute2/lib/libutil.a \
+  -lcap \
+  -o harness
